@@ -132,6 +132,7 @@ class CarParking(gym.Env):
         self.prev_reward = 0.0
         self.accum_arrive_reward = 0.0
         self.t = 0.0
+        self.prev_action = None  # 相对动作掩码：每个episode重置上一次动作
 
         if level is not None:
             self.set_level(level)
@@ -349,8 +350,13 @@ class CarParking(gym.Env):
             'box_union_reward':reward_list[4],\
             'lateral_guide_reward':reward_list[5],})
 
+        # 保存动作用于相对动作掩码
+        if action is not None:
+            self.prev_action = action.copy()
+
         info = OrderedDict({'reward_info':reward_info,
-            'path_to_dest':None})
+            'path_to_dest':None,
+            'prev_action':self.prev_action})  # 返回给Agent用于相对动作掩码
         if self.t > 1 and status==Status.CONTINUE\
             and self.vehicle.state.loc.distance(self.map.dest.loc)<RS_MAX_DIST:
             rs_path_to_dest = self.find_rs_path(status)

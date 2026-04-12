@@ -23,7 +23,7 @@ class SACCriticAdapter(nn.Module):
     def forward(self, state: dict, action: torch.Tensor) -> torch.Tensor:
         state_action = state 
         state_action['action'] = action
-        x = self.net(state_action)    #½«»ìºÏºóµÄ×ÖµäÎ¹¸øÈÚºÏÍøÂç self.net£¬ÍÂ³öÒ»¸ö´ú±í¸Ã×´Ì¬-¶¯×÷¶Ô¼ÛÖµµÄ±êÁ¿£¨Q Öµ£©
+        x = self.net(state_action)    #å°†æ··åˆåŽçš„å­—å…¸å–‚ç»™èžåˆç½‘ç»œ self.netï¼Œåå‡ºä¸€ä¸ªä»£è¡¨è¯¥çŠ¶æ€-åŠ¨ä½œå¯¹ä»·å€¼çš„æ ‡é‡ï¼ˆQ å€¼ï¼‰
         return x
     
     def load_img_encoder(self, path: str = None, device: str = None, require_grad: bool = False) -> None:
@@ -47,7 +47,7 @@ class SACConfig(ConfigBase):
         # self.mini_batch_size = 32
         self.mini_epoch = 1
         self.initial_temperature = 0.01
-        self.action_dim = 2#£¨×ª½ÇºÍ¼ÓËÙ¶È/ËÙ¶È£©
+        self.action_dim = 2#ï¼ˆè½¬è§’å’ŒåŠ é€Ÿåº¦/é€Ÿåº¦ï¼‰
         self.target_entropy = -self.action_dim
 
         # tricks
@@ -68,6 +68,7 @@ class SACAgent(AgentBase):
         super().__init__(SACConfig, configs, verbose, save_params, load_params)
         self.discrete = discrete
         self.action_filter = ActionMask()
+        self.prev_action = None  # ????????????????????????
 
         # debug
         self.actor_loss_list = []
@@ -134,7 +135,7 @@ class SACAgent(AgentBase):
             ("log_std", self.log_std, 0)
         ]
 
-    def _actor_forward(self, obs) -> torch.distributions.Distribution: #½«Ô­Ê¼µÄobs×ª»¯Îª¸ÅÂÊ·Ö²¼
+    def _actor_forward(self, obs) -> torch.distributions.Distribution: #å°†åŽŸå§‹çš„obsè½¬åŒ–ä¸ºæ¦‚çŽ‡åˆ†å¸ƒ
         observation = deepcopy(obs)
         if self.configs.state_norm:
             observation = self.state_normalize.state_norm(observation)
@@ -151,10 +152,10 @@ class SACAgent(AgentBase):
             
         return dist
     
-    def _post_process_action(self, action_dist:torch.distributions.Distribution , action_mask=None):
+    def _post_process_action(self, action_dist:torch.distributions.Distribution , action_mask=None, prev_action=None):
         if action_mask is not None:
             mean, std = action_dist.mean, action_dist.stddev
-            action = self.action_filter.choose_action(mean, std, action_mask)
+            action = self.action_filter.choose_action(mean, std, action_mask, prev_action)
             action = torch.FloatTensor(action).to(self.device)
         else:
             action = action_dist.sample()
@@ -166,19 +167,21 @@ class SACAgent(AgentBase):
         log_prob = log_prob.detach().cpu().numpy().flatten()
         return action, log_prob
 
-    def choose_action(self, obs):
+    def choose_action(self, obs, prev_action=None):
 
         dist = self._actor_forward(obs)
         action_mask = obs['action_mask']
-        action, other_info = self._post_process_action(dist, action_mask)
+        action, other_info = self._post_process_action(dist, action_mask, prev_action)
+        self.prev_action = action  # ?????????????
 
         return action, other_info
 
-    def get_action(self, obs: np.ndarray):
+    def get_action(self, obs: np.ndarray, prev_action=None):
         '''Take action based on one observation. 
 
         Args:
             observation(np.ndarray): np.ndarray with the same shape of self.state_dim.
+            prev_action: ??????????????????????????
 
         Returns:
             action: If self.discrete, the action is an (int) index. 
@@ -186,7 +189,7 @@ class SACAgent(AgentBase):
             log_prob(np.ndarray): the log probability of taken action.
         '''
         dist = self._actor_forward(obs)
-        action, log_prob = self._post_process_action(dist)
+        action, log_prob = self._post_process_action(dist, action_mask=None, prev_action=prev_action)
                 
         return action, log_prob
 
@@ -261,7 +264,7 @@ class SACAgent(AgentBase):
         return action_batch, log_prob
 
     def update(self):
-        for _ in range(self.configs.mini_epoch):#×¼±¸ÑµÁ·Êý¾Ý
+        for _ in range(self.configs.mini_epoch):#??????????
             batches = self.memory.sample(self.configs.batch_size)
             state_batch = self.obs2tensor(batches["state"])
             action_batch = torch.FloatTensor(batches["action"]).to(self.device)

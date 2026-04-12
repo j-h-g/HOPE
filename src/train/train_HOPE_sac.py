@@ -182,6 +182,7 @@ if __name__=="__main__":
             case_id = None
         obs = env.reset(case_id, None, scene_chosen)
         parking_agent.reset()
+        prev_action = None  # 相对动作掩码：每个episode重置
         case_id_list.append(env.map.case_id)
         done = False
         total_reward = 0
@@ -195,13 +196,14 @@ if __name__=="__main__":
                 action = env.action_space.sample()
                 log_prob = parking_agent.get_log_prob(obs, action)
             else:
-                action, log_prob = parking_agent.get_action(obs)
+                action, log_prob = parking_agent.get_action(obs, prev_action)
 
             next_obs, reward, done, info = env.step(action)
             reward_info.append(list(info['reward_info'].values()))
             total_reward += reward
             reward_per_state_list.append(reward)
             parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs))
+            prev_action = action  # 相对动作掩码：保存用于下一步
             obs = next_obs
             if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
                 actor_loss, critic_loss = parking_agent.update()
@@ -244,7 +246,7 @@ if __name__=="__main__":
             print(parking_agent.log_std.detach().cpu().numpy().reshape(-1), parking_agent.alpha.detach().cpu().numpy().reshape(-1))
             print("episode:%s  average reward:%s"%(i,np.mean(reward_list[-50:])))
             print(np.mean(parking_agent.actor_loss_list[-100:]),np.mean(parking_agent.critic_loss_list[-100:]))
-            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward')
+            print('time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward ,lateral_guide_reward')
             for j in range(10):
                 print(case_id_list[-(10-j)],reward_list[-(10-j)],reward_info_list[-(10-j)])
             print("")

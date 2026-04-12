@@ -6,14 +6,35 @@ from scipy.ndimage.filters import minimum_filter1d
 from configs import *
 
 
+def get_action_smoothness_mask(action_space, prev_action, 
+                                 max_steer_change=MAX_STEER_CHANGE,
+                                 max_speed_change=MAX_SPEED_CHANGE,
+                                 weight=RELATIVE_ACTION_MASK_WEIGHT):
+    if prev_action is None:
+        return np.ones(len(action_space))
+    
+    possible_actions = np.array(action_space)
+    prev_action = np.array(prev_action)
+    
+ 
+    steer_diff = np.abs(possible_actions[:, 0] - prev_action[0])
+    speed_diff = np.abs(possible_actions[:, 1] - prev_action[1])
+    
 
-# 输入 (Inputs)：环境感知数据 (raw_lidar_obs)：当前环境反馈的真实激光雷达距离数组。
+    steer_mask = np.clip(1 - steer_diff / max_steer_change, 0, 1)
+    speed_mask = np.clip(1 - speed_diff / max_speed_change, 0, 1)
+    
 
-# 神经网络意图 (action_mean, action_std)：SAC 算法中 Actor 网络针对当前状态给出的连续动作高斯分布参数。
+    combined_mask = (steer_mask * 0.7 + speed_mask * 0.3)
+    
 
-# 输出 (Output)：
+    if weight < 1.0:
 
-# 最终执行动作 (action_chosen)：一个绝对不会导致车辆立即撞墙的、具体的物理控制量（转向角和速度），直接发给仿真环境执行。
+        epsilon = 0.05
+        combined_mask = epsilon + (1 - epsilon) * (combined_mask ** weight)
+    
+    return combined_mask
+
 
 class ActionMask():
     def __init__(self, VehicleBox=VehicleBox, n_iter=10) -> None:
@@ -121,7 +142,7 @@ class ActionMask():
         
         return np.array(vehicle_boxes).transpose(1,0,2,3)
 
-    def precompute(self,):#模拟所有 42 个动作在未来 10 步内，车身轮廓与虚拟雷达射线的交点距离
+    def precompute(self,):
         """
         Precomputation of dist_star, which can accelerate the calculatio of action mask.
 
@@ -206,7 +227,7 @@ class ActionMask():
         return np.clip(np.concatenate((forward_step_len_, backward_step_len_)), 0, self.n_iter)/self.n_iter
     
     
-    def choose_action(self, action_mean, action_std, action_mask):
+    def choose_action(self, action_mean, action_std, action_mask, prev_action=None):
 
         if isinstance(action_mean, torch.Tensor):
             action_mean = action_mean.cpu().numpy()
@@ -228,9 +249,20 @@ class ActionMask():
         # deal the scaling
         scale_steer = VALID_STEER[1]
         scale_speed = 1
-        possible_actions = possible_actions/np.array([scale_steer, scale_speed])
-        prob = calculate_probability(action_mean, action_std, possible_actions)
+        possible_actions_scaled = possible_actions/np.array([scale_steer, scale_speed])
+        prob = calculate_probability(action_mean, action_std, possible_actions_scaled)
         exp_prob = np.exp(prob) * action_mask
+        
+        
+        if USE_RELATIVE_ACTION_MASK and prev_action is not None:
+            smoothness_mask = get_action_smoothness_mask(
+                possible_actions, prev_action,
+                max_steer_change=MAX_STEER_CHANGE,
+                max_speed_change=MAX_SPEED_CHANGE,
+                weight=RELATIVE_ACTION_MASK_WEIGHT
+            )
+            exp_prob = exp_prob * smoothness_mask
+        
         prob_softmax = exp_prob / np.sum(exp_prob)
         actions = np.arange(len(possible_actions))
         action_chosen = np.random.choice(actions, p=prob_softmax)

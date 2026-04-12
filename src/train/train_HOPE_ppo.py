@@ -181,6 +181,7 @@ if __name__=="__main__":
             case_id = None
         obs = env.reset(case_id, None, scene_chosen)
         parking_agent.reset()
+        prev_action = None  # 相对动作掩码：每个episode重置
         case_id_list.append(env.map.case_id)
         done = False
         total_reward = 0
@@ -189,12 +190,13 @@ if __name__=="__main__":
         xy = []
         while not done:
             step_num += 1
-            action, log_prob = parking_agent.choose_action(obs)
+            action, log_prob = parking_agent.choose_action(obs, prev_action)
             next_obs, reward, done, info = env.step(action)
             reward_info.append(list(info['reward_info'].values()))
             total_reward += reward
             reward_per_state_list.append(reward)
             parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs))
+            prev_action = action  # 相对动作掩码：保存用于下一步
             obs = next_obs
             if len(parking_agent.memory) % parking_agent.configs.batch_size == 0:
                 if verbose:

@@ -61,6 +61,9 @@ class ParkingAgent(object):
     def reset(self,):
         if self.planner is not None:
             self.planner.reset()
+        # 重置相对动作掩码的状态
+        if hasattr(self.agent, 'prev_action'):
+            self.agent.prev_action = None
 
     def set_planner_path(self, path=None, forced=False):
         if self.planner is None:
@@ -75,26 +78,27 @@ class ParkingAgent(object):
     def get_log_prob(self, obs, action):
         return self.agent.get_log_prob(obs, action)
 
-    def choose_action(self, obs):
+    def choose_action(self, obs, prev_action=None):
         '''
         Get the fused decision from the planner and the agent.
         The action is clipped to the range of the safe action space using action mask.
 
         Params:
             obs(dict): the observation of the environment
+            prev_action: 上一步的动作，用于相对动作掩码
 
         Return:
             action(np.array): the fused decision
             other: the other information, such as the log_prob of the action in case of PPO
         '''
         if not self.executing_rs:
-            return self.agent.choose_action(obs)
+            return self.agent.choose_action(obs, prev_action)
         else:
             action = self.planner.get_action()
             log_prob = self.agent.get_log_prob(obs, action)
             return action, log_prob
         
-    def get_action(self, obs):
+    def get_action(self, obs, prev_action=None):
         '''
         Get the fused decision from the planner and the agent.
 
@@ -106,7 +110,7 @@ class ParkingAgent(object):
             other: the other information, such as the log_prob of the action in case of PPO
         '''
         if not self.executing_rs:
-            return self.agent.get_action(obs)
+            return self.agent.get_action(obs, prev_action)
         else:
             action = self.planner.get_action()
             log_prob = self.agent.get_log_prob(obs, action)

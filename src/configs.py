@@ -184,12 +184,19 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'rs_dist_reward':0,\
             'dist_reward':5,\
             'angle_reward':0,\
-            'box_union_reward':10,})
+            'box_union_reward':10,\
+            'lateral_guide_reward':1,})
 
 # A* 粗轨迹引导奖励
-ASTAR_GUIDE_REWARD_WEIGHT = 20.0       # 引导奖励权重
+ASTAR_GUIDE_REWARD_WEIGHT = 3.0       # 引导奖励权重
 ASTAR_LATERAL_DECAY = 3.0            # 横向距离衰减参数（米）
 ASTAR_MAX_LATERAL_DIST = 8.0         # 最大惩罚阈值（米）
+
+# 相对动作掩码（动作平滑）
+USE_RELATIVE_ACTION_MASK = True                    # 是否启用相对动作掩码
+RELATIVE_ACTION_MASK_WEIGHT = 0.3                 # 衰减系数强度（0-1，越小越严格）
+MAX_STEER_CHANGE = 0.3                            # 最大转向角变化（弧度/步）
+MAX_SPEED_CHANGE = 1.0                            # 最大速度变化/步
 
 
 CONFIGS_ACTION = {

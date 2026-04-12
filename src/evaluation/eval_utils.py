@@ -31,6 +31,7 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
     for i in trange(episode):
         obs = env.reset(i+1)
         agent.reset()
+        prev_action = None  # 相对动作掩码
         done = False
         total_reward = 0
         step_num = 0
@@ -40,15 +41,16 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
         while not done:
             step_num += 1
             if post_proc_action:
-                action, _ = agent.choose_action(obs)
+                action, _ = agent.choose_action(obs, prev_action)
             else:
-                action, _ = agent.get_action(obs)
+                action, _ = agent.get_action(obs, prev_action)
             if (last_obs == obs['target']).all():
                 action = env.action_space.sample()
             last_obs = obs['target']
             next_obs, reward, done, info = env.step(action)
             total_reward += reward
             obs = next_obs
+            prev_action = action  # 相对动作掩码
             path_length += np.linalg.norm(np.array(last_xy)-np.array((env.vehicle.state.loc.x, env.vehicle.state.loc.y)))
             last_xy = (env.vehicle.state.loc.x, env.vehicle.state.loc.y)
             

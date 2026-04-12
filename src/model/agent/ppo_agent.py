@@ -52,6 +52,7 @@ class PPOAgent(AgentBase):
         super().__init__(PPOConfig, configs, verbose, save_params, load_params)
         self.discrete = discrete
         self.action_filter = ActionMask()
+        self.prev_action = None  # 相对动作掩码：保存上一步的动作
 
         # debug
         self.actor_loss_list = []
@@ -143,10 +144,10 @@ class PPOAgent(AgentBase):
             
         return dist
     
-    def _post_process_action(self, action_dist:torch.distributions.Distribution , action_mask=None): # to be replaced
+    def _post_process_action(self, action_dist:torch.distributions.Distribution , action_mask=None, prev_action=None): # to be replaced
         if action_mask is not None:
             mean, std = action_dist.mean, action_dist.stddev
-            action = self.action_filter.choose_action(mean, std, action_mask)
+            action = self.action_filter.choose_action(mean, std, action_mask, prev_action)
             action = torch.FloatTensor(action).to(self.device)
         else:
             action = action_dist.sample()
@@ -159,19 +160,21 @@ class PPOAgent(AgentBase):
         return action, log_prob
 
 
-    def choose_action(self, obs):
+    def choose_action(self, obs, prev_action=None):
 
         dist = self._actor_forward(obs)
         action_mask = obs['action_mask']
-        action, other_info = self._post_process_action(dist, action_mask)
-                
+        action, other_info = self._post_process_action(dist, action_mask, prev_action)
+        self.prev_action = action  # 保存用于下一轮
+
         return action, other_info
 
-    def get_action(self, obs: np.ndarray):
+    def get_action(self, obs: np.ndarray, prev_action=None):
         '''Take action based on one observation. 
 
         Args:
             observation(np.ndarray): np.ndarray with the same shape of self.state_dim.
+            prev_action: 上一步的动作，用于相对动作掩码
 
         Returns:
             action: If self.discrete, the action is an (int) index. 
@@ -179,7 +182,7 @@ class PPOAgent(AgentBase):
             log_prob(np.ndarray): the log probability of taken action.
         '''
         dist = self._actor_forward(obs)
-        action, log_prob = self._post_process_action(dist)
+        action, log_prob = self._post_process_action(dist, action_mask=None, prev_action=prev_action)
                 
         return action, log_prob
 
