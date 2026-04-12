@@ -35,7 +35,10 @@ import env.reeds_shepp as rsCurve
 from env.observation_processor import Obs_Processor
 from model.action_mask import ActionMask
 from configs import *
-
+#######
+from env.coarse_planner import AStarPlanner
+from shapely.geometry import Polygon, LineString, Point
+#######
 class CarParking(gym.Env):
 
     metadata = {
@@ -135,6 +138,22 @@ class CarParking(gym.Env):
         initial_state = self.map.reset(case_id, data_dir)
         self.vehicle.reset(initial_state)
         self.matrix = self.coord_transform_matrix()
+        # ================= 新增：生成 A* 粗轨迹引导 =================
+        # 由于每次 reset 后，地图的起点、终点甚至障碍物可能发生随机刷新，
+        # 因此在每个回合开始时重新初始化 Planner，确保读取到最新的地图状态。
+        # 针对死胡同或狭窄泊车空间，safe_margin 的设置尤为关键。
+        # 设为 1.5 米旨在为车身（特别是倒车时的车头扫掠角）留出足够的物理冗余。
+        self.coarse_planner = AStarPlanner(self.map, grid_resolution=0.5, safe_margin=0.5)
+        
+        self.coarse_traj = self.coarse_planner.plan(
+            start_state=self.vehicle.state, 
+            dest_state=self.map.dest
+        )
+        
+        # 增加容错输出：监控规划器在极端地图下是否失效
+        if self.verbose and self.coarse_traj is None:
+            print("[Warning] A* failed to find a coarse trajectory in the current episode!")
+        # ==========================================================
         return self.step()[0]
 
     def coord_transform_matrix(self) -> list:
@@ -145,6 +164,36 @@ class CarParking(gym.Env):
         by = 0.5 * (WIN_H - k * (self.map.ymax + self.map.ymin))
         self.k = k
         return [k, 0, 0, k, bx, by]
+
+    def _calc_lateral_distance(self):
+        """计算车辆到A*粗轨迹的最小横向距离"""
+        if not hasattr(self, 'coarse_traj') or self.coarse_traj is None or len(self.coarse_traj) < 2:
+            return None
+
+        vehicle_pos = (self.vehicle.state.loc.x, self.vehicle.state.loc.y)
+        min_dist = float('inf')
+
+        # 遍历轨迹线段，计算到每条线段的垂直距离
+        for i in range(len(self.coarse_traj) - 1):
+            p1 = self.coarse_traj[i]
+            p2 = self.coarse_traj[i + 1]
+
+            # 计算点到线段的距离
+            dx = p2[0] - p1[0]
+            dy = p2[1] - p1[1]
+            length_sq = dx*dx + dy*dy
+
+            if length_sq == 0:
+                dist = math.hypot(vehicle_pos[0] - p1[0], vehicle_pos[1] - p1[1])
+            else:
+                t = max(0, min(1, ((vehicle_pos[0] - p1[0]) * dx + (vehicle_pos[1] - p1[1]) * dy) / length_sq))
+                proj_x = p1[0] + t * dx
+                proj_y = p1[1] + t * dy
+                dist = math.hypot(vehicle_pos[0] - proj_x, vehicle_pos[1] - proj_y)
+
+            min_dist = min(min_dist, dist)
+
+        return min_dist
 
     def _coord_transform(self, object) -> list:
         transformed = affine_transform(object, self.matrix)
@@ -219,15 +268,26 @@ class CarParking(gym.Env):
         union_area = vehicle_box.intersection(dest_box).area
         box_union_reward = union_area/(2*dest_box.area - union_area)
         if box_union_reward < self.accum_arrive_reward:
-            box_union_reward = 0 
+            box_union_reward = 0
         else:
             prev_arrive_reward = self.accum_arrive_reward
             self.accum_arrive_reward = box_union_reward
             box_union_reward -= prev_arrive_reward
-        return [time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward]
+
+        # A* 横向偏差引导奖励
+        lateral_reward = 0
+        if ASTAR_GUIDE_REWARD_WEIGHT != 0:
+            lateral_dist = self._calc_lateral_distance()
+            if lateral_dist is not None:
+                clipped_dist = min(lateral_dist, ASTAR_MAX_LATERAL_DIST)
+                lateral_reward = ASTAR_GUIDE_REWARD_WEIGHT * math.exp(-clipped_dist / ASTAR_LATERAL_DECAY)
+            elif self.verbose:
+                print("[Warning] Cannot compute lateral distance - coarse traj unavailable")
+
+        return [time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, lateral_reward]
         
     def get_reward(self, status, prev_state):
-        reward_info = [0,0,0,0,0]
+        reward_info = [0, 0, 0, 0, 0, 0]
         if status == Status.CONTINUE:
             reward_info = self._get_reward(prev_state, self.vehicle.state)
         return reward_info
@@ -240,13 +300,13 @@ class CarParking(gym.Env):
 
         Returns:
         ----------
-        ``obsercation`` (Dict): 
+        ``obsercation`` (Dict):
             the observation of image based surroundings, lidar view and target representation.
             If `use_lidar_observation` is `True`, then `obsercation['img'] = None`.
-            If `use_lidar_observation` is `False`, then `obsercation['lidar'] = None`. 
+            If `use_lidar_observation` is `False`, then `obsercation['lidar'] = None`.
 
         ``reward_info`` (OrderedDict): different types of reward information, including:
-                time_cost ,rs_dist_reward ,dist_reward ,angle_reward ,box_union_reward
+                time_cost, rs_dist_reward, dist_reward, angle_reward, box_union_reward, lateral_guide_reward
         `status` (`Status`): represent the state of vehicle, including:
                 `CONTINUE`, `ARRIVED`, `COLLIDED`, `OUTBOUND`, `OUTTIME`
         `info` (`OrderedDict`): other information.
@@ -286,7 +346,8 @@ class CarParking(gym.Env):
             'rs_dist_reward':reward_list[1],\
             'dist_reward':reward_list[2],\
             'angle_reward':reward_list[3],\
-            'box_union_reward':reward_list[4],})
+            'box_union_reward':reward_list[4],\
+            'lateral_guide_reward':reward_list[5],})
 
         info = OrderedDict({'reward_info':reward_info,
             'path_to_dest':None})
@@ -308,6 +369,21 @@ class CarParking(gym.Env):
             surface, START_COLOR, self._coord_transform(self.map.start_box), width=1)
         pygame.draw.polygon(
             surface, DEST_COLOR, self._coord_transform(self.map.dest_box))
+        
+        # ================= 新增：可视化 A* 粗轨迹 =================
+        if hasattr(self, 'coarse_traj') and self.coarse_traj is not None and len(self.coarse_traj) > 1:
+            # 将 (x, y) 列表转为 LineString，复用环境的仿射变换将其转为屏幕像素坐标
+            traj_line = LineString(self.coarse_traj)
+            screen_points = self._coord_transform(traj_line)
+            
+            # 1. 绘制连线（亮黄色，线宽 3）
+            COARSE_TRAJ_COLOR = (255, 255, 0)
+            pygame.draw.lines(surface, COARSE_TRAJ_COLOR, False, screen_points, width=3)
+            
+            # 2. (可选) 把每个 A* 节点画成红色小圆点，方便你观察 grid_resolution 的密度
+            for point in screen_points:
+                pygame.draw.circle(surface, (255, 0, 0), (int(point[0]), int(point[1])), 3)
+        # ==========================================================
         
         pygame.draw.polygon(
             surface, self.vehicle.color, self._coord_transform(self.vehicle.box))

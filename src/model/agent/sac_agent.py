@@ -21,9 +21,9 @@ class SACCriticAdapter(nn.Module):
         self.net = MultiObsEmbedding(self.configs)
 
     def forward(self, state: dict, action: torch.Tensor) -> torch.Tensor:
-        state_action = state
+        state_action = state 
         state_action['action'] = action
-        x = self.net(state_action)
+        x = self.net(state_action)    #将混合后的字典喂给融合网络 self.net，吐出一个代表该状态-动作对价值的标量（Q 值）
         return x
     
     def load_img_encoder(self, path: str = None, device: str = None, require_grad: bool = False) -> None:
@@ -47,7 +47,7 @@ class SACConfig(ConfigBase):
         # self.mini_batch_size = 32
         self.mini_epoch = 1
         self.initial_temperature = 0.01
-        self.action_dim = 2
+        self.action_dim = 2#（转角和加速度/速度）
         self.target_entropy = -self.action_dim
 
         # tricks
@@ -134,7 +134,7 @@ class SACAgent(AgentBase):
             ("log_std", self.log_std, 0)
         ]
 
-    def _actor_forward(self, obs) -> torch.distributions.Distribution:
+    def _actor_forward(self, obs) -> torch.distributions.Distribution: #将原始的obs转化为概率分布
         observation = deepcopy(obs)
         if self.configs.state_norm:
             observation = self.state_normalize.state_norm(observation)
@@ -261,7 +261,7 @@ class SACAgent(AgentBase):
         return action_batch, log_prob
 
     def update(self):
-        for _ in range(self.configs.mini_epoch):
+        for _ in range(self.configs.mini_epoch):#准备训练数据
             batches = self.memory.sample(self.configs.batch_size)
             state_batch = self.obs2tensor(batches["state"])
             action_batch = torch.FloatTensor(batches["action"]).to(self.device)

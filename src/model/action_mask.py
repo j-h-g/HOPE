@@ -5,6 +5,16 @@ from scipy.ndimage.filters import minimum_filter1d
 
 from configs import *
 
+
+
+# 输入 (Inputs)：环境感知数据 (raw_lidar_obs)：当前环境反馈的真实激光雷达距离数组。
+
+# 神经网络意图 (action_mean, action_std)：SAC 算法中 Actor 网络针对当前状态给出的连续动作高斯分布参数。
+
+# 输出 (Output)：
+
+# 最终执行动作 (action_chosen)：一个绝对不会导致车辆立即撞墙的、具体的物理控制量（转向角和速度），直接发给仿真环境执行。
+
 class ActionMask():
     def __init__(self, VehicleBox=VehicleBox, n_iter=10) -> None:
         print('initializing action mask')
@@ -111,7 +121,7 @@ class ActionMask():
         
         return np.array(vehicle_boxes).transpose(1,0,2,3)
 
-    def precompute(self,):
+    def precompute(self,):#模拟所有 42 个动作在未来 10 步内，车身轮廓与虚拟雷达射线的交点距离
         """
         Precomputation of dist_star, which can accelerate the calculatio of action mask.
 
