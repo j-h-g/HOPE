@@ -186,6 +186,11 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'angle_reward':0,\
             'box_union_reward':10,})
 
+# A* 粗轨迹引导奖励
+ASTAR_GUIDE_REWARD_WEIGHT = 1.0       # 引导奖励权重
+ASTAR_LATERAL_DECAY = 2.0            # 横向距离衰减参数（米）
+ASTAR_MAX_LATERAL_DIST = 5.0         # 最大惩罚阈值（米）
+
 
 CONFIGS_ACTION = {
     'use_tanh_activate': True,
