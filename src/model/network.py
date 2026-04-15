@@ -87,6 +87,13 @@ class MultiObsEmbedding(nn.Module):
                 layers.append(nn.Linear(embed_size, embed_size))
             self.embed_am = nn.Sequential(*layers)
 
+        if 'astar_guide_shape' in configs and configs['astar_guide_shape'] is not None:
+            layers = [nn.Linear(configs['astar_guide_shape'], embed_size)]
+            for _ in range(configs['n_embed_layers']-1):
+                layers.append(activate_func)
+                layers.append(nn.Linear(embed_size, embed_size))
+            self.embed_guide = nn.Sequential(*layers)
+
         if configs['img_shape'] is not None:
             self.embed_img = ImgEncoder(configs['img_shape'], configs['k_img_conv'],\
                                     embed_size, configs['img_conv_layers'], configs['img_linear_layers'])
@@ -131,6 +138,14 @@ class MultiObsEmbedding(nn.Module):
         if self.use_action_mask:
             for layer_name, layer in self.embed_am.state_dict().items():
                 # The output layer is specially dealt
+                gain = 1
+                if layer_name.endswith("weight"):
+                    nn.init.orthogonal_(layer, gain=gain)
+                elif layer_name.endswith("bias"):
+                    nn.init.constant_(layer, 0)
+
+        if hasattr(self, 'embed_guide'):
+            for layer_name, layer in self.embed_guide.state_dict().items():
                 gain = 1
                 if layer_name.endswith("weight"):
                     nn.init.orthogonal_(layer, gain=gain)
@@ -181,6 +196,10 @@ class MultiObsEmbedding(nn.Module):
             feature_img, _ = self.embed_img(x['img'])
             feature_img = self.re_embed_img(feature_img)
             features.append(feature_img)
+
+        if 'astar_guide' in x and x['astar_guide'] is not None:
+            feature_guide = self.embed_guide(x['astar_guide'])
+            features.append(feature_guide)
 
         if self.input_action:
             feature_action = self.embed_action(x['action'])

@@ -37,6 +37,7 @@ from model.action_mask import ActionMask
 from configs import *
 #######
 from env.coarse_planner import AStarPlanner
+from env.astar_guide import AStarGuide
 from shapely.geometry import Polygon, LineString, Point
 #######
 class CarParking(gym.Env):
@@ -116,6 +117,10 @@ class CarParking(gym.Env):
         self.observation_space['target'] = spaces.Box(
             low=low_bound, high=high_bound, shape=(self.tgt_repr_size,), dtype=np.float64
         )
+        # A* 粗轨迹引导特征
+        self.observation_space['astar_guide'] = spaces.Box(
+            low=-1, high=1, shape=(ASTAR_GUIDE_SHAPE,), dtype=np.float64
+        )
     
     def set_level(self, level:str=None):
         if level is None:
@@ -145,15 +150,29 @@ class CarParking(gym.Env):
         # 针对死胡同或狭窄泊车空间，safe_margin 的设置尤为关键。
         # 设为 1.5 米旨在为车身（特别是倒车时的车头扫掠角）留出足够的物理冗余。
         self.coarse_planner = AStarPlanner(self.map, grid_resolution=0.5, safe_margin=0.5)
-        
+
         self.coarse_traj = self.coarse_planner.plan(
-            start_state=self.vehicle.state, 
+            start_state=self.vehicle.state,
             dest_state=self.map.dest
         )
-        
+
         # 增加容错输出：监控规划器在极端地图下是否失效
         if self.verbose and self.coarse_traj is None:
             print("[Warning] A* failed to find a coarse trajectory in the current episode!")
+
+        # 记录起始状态，用于计算路径进度比
+        self.start_state = self.vehicle.state
+
+        # 初始化 A* 引导特征计算器
+        if self.coarse_traj is not None and len(self.coarse_traj) >= 2:
+            self.astar_guide = AStarGuide(
+                self.coarse_traj,
+                self.vehicle.state,
+                self.map.dest,
+                start_state=self.start_state
+            )
+        else:
+            self.astar_guide = None
         # ==========================================================
         return self.step()[0]
 
@@ -275,13 +294,23 @@ class CarParking(gym.Env):
             self.accum_arrive_reward = box_union_reward
             box_union_reward -= prev_arrive_reward
 
-        # A* 横向偏差引导奖励
+        # A* 横向偏差引导奖励（差分形式，有方向性）
         lateral_reward = 0
-        if ASTAR_GUIDE_REWARD_WEIGHT != 0:
-            lateral_dist = self._calc_lateral_distance()
-            if lateral_dist is not None:
-                clipped_dist = min(lateral_dist, ASTAR_MAX_LATERAL_DIST)
-                lateral_reward = ASTAR_GUIDE_REWARD_WEIGHT * math.exp(-clipped_dist / ASTAR_LATERAL_DECAY)
+        if REWARD_WEIGHT['lateral_guide_reward'] != 0:
+            curr_lateral_dist = self._calc_lateral_distance()
+            if curr_lateral_dist is not None:
+                # 计算 prev_state 的横向距离（需要临时更新 vehicle 状态）
+                saved_state = self.vehicle.state
+                self.vehicle.state = prev_state
+                prev_lateral_dist = self._calc_lateral_distance()
+                self.vehicle.state = saved_state
+
+                if prev_lateral_dist is not None:
+                    curr_val = math.exp(-curr_lateral_dist / ASTAR_LATERAL_DECAY)
+                    prev_val = math.exp(-prev_lateral_dist / ASTAR_LATERAL_DECAY)
+                    lateral_reward = REWARD_WEIGHT['lateral_guide_reward'] * (prev_val - curr_val)
+                else:
+                    lateral_reward = 0
             elif self.verbose:
                 print("[Warning] Cannot compute lateral distance - coarse traj unavailable")
 
@@ -477,8 +506,12 @@ class CarParking(gym.Env):
         if self.clock is None:
             self.clock = pygame.time.Clock()
 
+        # 每步更新 A* 引导特征
+        if self.astar_guide is not None:
+            self.astar_guide.update(self.vehicle.state)
+
         self._render(self.screen)
-        observation = {'img':None, 'lidar':None, 'target':None, 'action_mask':None}
+        observation = {'img':None, 'lidar':None, 'target':None, 'action_mask':None, 'astar_guide':None}
         if self.use_img_observation:
             raw_observation = self._get_img_observation(self.screen)
             observation['img'] = self._process_img_observation(raw_observation)
@@ -487,6 +520,10 @@ class CarParking(gym.Env):
         if self.use_action_mask:
             observation['action_mask'] = self.action_filter.get_steps(observation['lidar'])
         observation['target'] = self._get_targt_repr()
+        if self.astar_guide is not None:
+            observation['astar_guide'] = self.astar_guide.get_features()
+        else:
+            observation['astar_guide'] = np.zeros(ASTAR_GUIDE_SHAPE)
         pygame.display.update()
         self.clock.tick(self.fps)
         

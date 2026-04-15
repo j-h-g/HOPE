@@ -1,6 +1,6 @@
 
 import os
-# os.environ["SDL_VIDEODRIVER"]="dummy"
+os.environ["SDL_VIDEODRIVER"]="dummy"
 # os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
 import numpy as np
@@ -129,6 +129,9 @@ UPDATE_IMG_ENCODE = False
 C_CONV = [4, 8,]
 SIZE_FC = [256]
 
+# A* 粗轨迹引导特征（融入观察空间）
+ASTAR_GUIDE_SHAPE = 8
+
 ATTENTION_CONFIG = {
                 'depth': 1,
                 'heads': 8,
@@ -139,7 +142,7 @@ ATTENTION_CONFIG = {
 USE_ATTENTION = True
 
 ACTOR_CONFIGS = {
-    'n_modal':2+int(USE_IMG)+int(USE_ACTION_MASK),
+    'n_modal':2+int(USE_IMG)+int(USE_ACTION_MASK)+1,
     'lidar_shape':LIDAR_NUM,
     'target_shape':5,
     'action_mask_shape':N_DISCRETE_ACTION if USE_ACTION_MASK else None,
@@ -156,10 +159,11 @@ ACTOR_CONFIGS = {
     'use_tanh_output':True,
     'use_tanh_activate':True,
     'attention_configs': ATTENTION_CONFIG if USE_ATTENTION else None,
+    'astar_guide_shape': ASTAR_GUIDE_SHAPE,
 }
 
 CRITIC_CONFIGS = {
-    'n_modal':2+int(USE_IMG)+int(USE_ACTION_MASK),
+    'n_modal':2+int(USE_IMG)+int(USE_ACTION_MASK)+1,
     'lidar_shape':LIDAR_NUM,
     'target_shape':5,
     'action_mask_shape':N_DISCRETE_ACTION if USE_ACTION_MASK else None,
@@ -176,6 +180,7 @@ CRITIC_CONFIGS = {
     'use_tanh_output':False,
     'use_tanh_activate':True,
     'attention_configs': ATTENTION_CONFIG if USE_ATTENTION else None,
+    'astar_guide_shape': ASTAR_GUIDE_SHAPE,
 }
 
 REWARD_RATIO = 0.1
@@ -185,12 +190,10 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
             'dist_reward':5,\
             'angle_reward':0,\
             'box_union_reward':10,\
-            'lateral_guide_reward':1,})
+            'lateral_guide_reward':0.3,})
 
 # A* 粗轨迹引导奖励
-ASTAR_GUIDE_REWARD_WEIGHT = 3.0       # 引导奖励权重
 ASTAR_LATERAL_DECAY = 3.0            # 横向距离衰减参数（米）
-ASTAR_MAX_LATERAL_DIST = 8.0         # 最大惩罚阈值（米）
 
 # 相对动作掩码（动作平滑）
 USE_RELATIVE_ACTION_MASK = True                    # 是否启用相对动作掩码
