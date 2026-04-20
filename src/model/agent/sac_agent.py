@@ -56,6 +56,11 @@ class SACConfig(ConfigBase):
         self.reward_norm = False
         self.reward_scaling = False
 
+        # zone-aware & joint batch normalization
+        self.use_zone_norm = True
+        self.zone_boundaries = [2.0, 5.0, 10.0]
+        self.use_joint_batch_norm = False  # 保留字段，逻辑由 use_zone_norm 控制
+
         self.merge_configs(configs)
 
 
@@ -74,16 +79,25 @@ class SACAgent(AgentBase):
         self.actor_loss_list = []
         self.critic_loss_list = []
 
+        # tricks (must be before _init_network because check_list references them)
+        self.state_normalize = None
+        self.zone_state_normalize = None
+        if self.configs.state_norm:
+            self.state_normalize = StateNorm(self.configs.observation_shape)
+
+        if self.configs.use_zone_norm:
+            from model.state_norm import ZoneStateNorm
+            self.zone_state_normalize = ZoneStateNorm(
+                self.configs.observation_shape,
+                zone_boundaries=self.configs.zone_boundaries
+            )
+
         # the networks
         self._init_network()
 
         # As a on-policy RL algorithm, PPO does not have memory, the self.memory represents
         # the buffer
         self.memory = ReplayMemory(self.configs.memory_size, ["log_prob","next_obs"])
-
-        # tricks
-        if self.configs.state_norm:
-            self.state_normalize = StateNorm(self.configs.observation_shape)
 
         
     def _init_network(self):
@@ -132,12 +146,18 @@ class SACAgent(AgentBase):
             ("critic_target2", self.critic_target_net2, 1),
             ("log_alpha", self.log_alpha, 0),
             ("log_alpha_optimizer", self.log_alpha_optimizer, 1),
-            ("log_std", self.log_std, 0)
+            ("log_std", self.log_std, 0),
+            ("zone_state_normalize", self.zone_state_normalize, 0),
         ]
 
     def _actor_forward(self, obs) -> torch.distributions.Distribution: #将原始的obs转化为概率分布
         observation = deepcopy(obs)
-        if self.configs.state_norm:
+        if self.configs.use_zone_norm:
+            distance = self._get_distance_to_goal(observation)
+            zone_id = self.zone_state_normalize._get_zone_id(distance)
+            print(f"[DEBUG] obs type: {type(observation)}, distance shape: {distance.shape}, zone_id shape: {zone_id.shape}, obs batch size: {observation[list(observation.keys())[0]].shape[0] if isinstance(observation, dict) else len(observation)}")
+            observation = self.zone_state_normalize.normalize(observation, zone_id, update=False)
+        elif self.configs.state_norm:
             observation = self.state_normalize.state_norm(observation)
         observation = self.obs2tensor(observation)
         
@@ -215,9 +235,11 @@ class SACAgent(AgentBase):
             observations(tuple): (obs, action, reward, done, log_prob, next_obs)
         '''
         obs, action, reward, done, log_prob, next_obs = deepcopy(observations)
-        if self.configs.state_norm:
+        # use_zone_norm 启用时：原始数据入 buffer，归一化在 update() 的 Joint 流程中统一处理
+        # 避免双重归一化（push_memory 用全局统计量 + update 用 Zone 统计量）
+        if self.configs.state_norm and not self.configs.use_zone_norm:
             obs = self.state_normalize.state_norm(obs)
-            next_obs = self.state_normalize.state_norm(next_obs,update=True)
+            next_obs = self.state_normalize.state_norm(next_obs, update=True)
         observations = (obs, action, reward, done, log_prob, next_obs)
         self.memory.push(observations)
 
@@ -258,12 +280,190 @@ class SACAgent(AgentBase):
         std = torch.exp(log_std)
         action_dist = Normal(mean, std)
         action_batch = action_dist.rsample()
-        
+
         action_batch = torch.clamp(action_batch, -1, 1)
         log_prob = action_dist.log_prob(action_batch)
         return action_batch, log_prob
 
+    def _get_distance_to_goal(self, obs) -> np.ndarray:
+        """
+        从 obs 中提取车辆到终点的欧氏距离
+        假设 obs['target'] 的前2个元素为 [x, y] 或 obs 中有 'position' 字段
+
+        返回: distance [N,] 每样本的距离（米）
+        """
+        if isinstance(obs, dict):
+            if 'target' in obs and obs['target'] is not None:
+                target = np.asarray(obs['target'])
+                if len(target.shape) == 1:
+                    return np.linalg.norm(target[:2], keepdims=True)
+                return np.linalg.norm(target[:, :2], axis=1)
+            return np.zeros(obs[list(obs.keys())[0]].shape[0])
+        elif isinstance(obs, list):
+            first = obs[0]
+            if 'target' in first and first['target'] is not None:
+                target = np.asarray(first['target'])
+                if len(target.shape) == 1:
+                    return np.linalg.norm(target[:2], keepdims=True)
+                return np.linalg.norm(target[:, :2], axis=1)
+            return np.zeros(1)
+        return np.zeros(1)
+
+    def _merge_obs_list(self, obs_list1: list, obs_list2: list) -> dict:
+        """将两个 list of obs_dict 按 obs_type concat"""
+        if len(obs_list1) == 0:
+            return {}
+        merged = {}
+        for k in obs_list1[0].keys():
+            arr1 = np.stack([o[k] for o in obs_list1], axis=0)
+            arr2 = np.stack([o[k] for o in obs_list2], axis=0)
+            merged[k] = np.concatenate([arr1, arr2], axis=0)
+        return merged
+
+    def _concat_obs_tensors(self, obs1: dict, obs2: dict) -> dict:
+        """将两个 obs_tensor_dict concat"""
+        merged = {}
+        for k in obs1.keys():
+            merged[k] = torch.cat([obs1[k], obs2[k]], dim=0)
+        return merged
+
     def update(self):
+        if not self.configs.use_joint_batch_norm and not self.configs.use_zone_norm:
+            return self._update_original()
+
+        B = self.configs.batch_size
+
+        for _ in range(self.configs.mini_epoch):
+            batches = self.memory.sample(B)
+            state_batch = batches["state"]
+            next_state_batch = batches["next_obs"]
+            action_batch = torch.FloatTensor(batches["action"]).to(self.device)
+            rewards = torch.FloatTensor(np.array(batches["reward"])).unsqueeze(1)
+            reward_batch = self._reward_norm(rewards) \
+                if self.configs.reward_norm else rewards
+            reward_batch = reward_batch.to(self.device)
+            done_batch = torch.FloatTensor(np.array(batches["done"])).to(self.device).unsqueeze(1)
+
+            # =====================================================
+            # 步骤 1: Zone 划分（若启用）
+            # =====================================================
+            if self.configs.use_zone_norm:
+                distance_s = self._get_distance_to_goal(state_batch)
+                distance_sn = self._get_distance_to_goal(next_state_batch)
+                zone_ids_s = self.zone_state_normalize._get_zone_id(distance_s)
+                zone_ids_sn = self.zone_state_normalize._get_zone_id(distance_sn)
+                zone_ids_joint = np.concatenate([zone_ids_s, zone_ids_sn], axis=0)
+            else:
+                zone_ids_joint = None
+
+            # =====================================================
+            # 步骤 2: 合并 state 和 next_state，Joint 归一化
+            # =====================================================
+            if isinstance(state_batch, list):
+                state_concat = self._merge_obs_list(state_batch, next_state_batch)
+            else:
+                state_concat = {
+                    k: np.concatenate([state_batch[k], next_state_batch[k]], axis=0)
+                    for k in state_batch.keys()
+                }
+
+            if self.configs.use_zone_norm:
+                state_concat_normed = self.zone_state_normalize.normalize(
+                    state_concat, zone_ids_joint, update=True
+                )
+            elif self.configs.state_norm:
+                joint_normed = {}
+                for k in state_concat.keys():
+                    arr = state_concat[k]
+                    if len(arr.shape) == 1:
+                        arr = arr[np.newaxis, :]
+                    joint_normed[k] = self.state_normalize.state_norm(
+                        {k: arr}, update=True
+                    )[k]
+                state_concat_normed = joint_normed
+            else:
+                state_concat_normed = state_concat
+
+            state_normed = {k: v[:B] for k, v in state_concat_normed.items()}
+            next_state_normed = {k: v[B:] for k, v in state_concat_normed.items()}
+
+            # =====================================================
+            # 步骤 3: obs2tensor 并 Joint 动作采样
+            # =====================================================
+            state_t = self.obs2tensor(state_normed)
+            next_state_t = self.obs2tensor(next_state_normed)
+
+            joint_t = self._concat_obs_tensors(state_t, next_state_t)
+            action_all, log_prob_all = self._get_action_and_log_prob(joint_t)
+
+            action_current = action_all[:B]
+            action_next = action_all[B:]
+            log_prob_current = log_prob_all[:B]
+            log_prob_next = log_prob_all[B:]
+
+            # =====================================================
+            # 步骤 4: Critic 更新（Joint forward）
+            # =====================================================
+            with torch.no_grad():
+                next_log_prob_sum = log_prob_next.sum(-1, keepdim=True)
+                q1_next = self.critic_target_net1(next_state_t, action_next)
+                q2_next = self.critic_target_net2(next_state_t, action_next)
+                q_next_target = torch.min(q1_next, q2_next) - self.alpha.detach() * next_log_prob_sum
+                q_target = reward_batch + (1 - done_batch) * self.configs.gamma * q_next_target
+
+            current_q1 = self.critic_net1(state_t, action_current)
+            current_q2 = self.critic_net2(state_t, action_current)
+            q1_loss = F.mse_loss(current_q1, q_target.detach())
+            q2_loss = F.mse_loss(current_q2, q_target.detach())
+
+            self.critic_optimizer1.zero_grad()
+            q1_loss.backward()
+            self.critic_optimizer1.step()
+            self.critic_optimizer2.zero_grad()
+            q2_loss.backward()
+            self.critic_optimizer2.step()
+
+            for p in self.critic_net1.parameters():
+                p.requires_grad = False
+            for p in self.critic_net2.parameters():
+                p.requires_grad = False
+
+            # =====================================================
+            # 步骤 5: Actor 更新
+            # =====================================================
+            log_prob_sum = log_prob_current.sum(-1, keepdim=True)
+            q1_val = self.critic_net1(state_t, action_current)
+            q2_val = self.critic_net2(state_t, action_current)
+            actor_loss = (self.alpha.detach() * log_prob_sum - torch.min(q1_val, q2_val)).mean()
+
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor_optimizer.step()
+
+            for p in self.critic_net1.parameters():
+                p.requires_grad = True
+            for p in self.critic_net2.parameters():
+                p.requires_grad = True
+
+            if self.configs.learn_temperature:
+                alpha_loss = (self.alpha * (-log_prob_sum - self.configs.target_entropy).detach()).mean()
+                self.log_alpha_optimizer.zero_grad()
+                alpha_loss.backward()
+                self.log_alpha_optimizer.step()
+
+            self._soft_update(self.critic_target_net1, self.critic_net1)
+            self._soft_update(self.critic_target_net2, self.critic_net2)
+
+            # =====================================================
+            # 步骤 6: 在线更新 Zone 统计量（若启用）
+            # =====================================================
+            # normalize() 内部已调用 _update_stats() 更新统计量，无需重复调用
+
+        a = actor_loss.detach().cpu().numpy()
+        b = q1_loss.item()
+        return a, b
+
+    def _update_original(self):
         for _ in range(self.configs.mini_epoch):#??????????
             batches = self.memory.sample(self.configs.batch_size)
             state_batch = self.obs2tensor(batches["state"])
