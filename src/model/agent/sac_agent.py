@@ -155,7 +155,6 @@ class SACAgent(AgentBase):
         if self.configs.use_zone_norm:
             distance = self._get_distance_to_goal(observation)
             zone_id = self.zone_state_normalize._get_zone_id(distance)
-            print(f"[DEBUG] obs type: {type(observation)}, distance shape: {distance.shape}, zone_id shape: {zone_id.shape}, obs batch size: {observation[list(observation.keys())[0]].shape[0] if isinstance(observation, dict) else len(observation)}")
             observation = self.zone_state_normalize.normalize(observation, zone_id, update=False)
         elif self.configs.state_norm:
             observation = self.state_normalize.state_norm(observation)
@@ -254,10 +253,22 @@ class SACAgent(AgentBase):
                 for o in obs:
                     merged_obs[obs_type].append(o[obs_type])
                 merged_obs[obs_type] = torch.FloatTensor(np.array(merged_obs[obs_type])).to(self.device)
+                # img 格式为 (B,H,W,C)，permute 到 (B,C,H,W) 以匹配 conv2d
+                if obs_type == 'img' and merged_obs[obs_type].ndim == 4:
+                    merged_obs[obs_type] = merged_obs[obs_type].permute(0, 3, 1, 2)
             obs = merged_obs 
         elif isinstance(obs, dict):
             for obs_type in self.configs.observation_shape.keys():
-                obs[obs_type] = torch.FloatTensor(obs[obs_type]).to(self.device).unsqueeze(0)
+                arr = torch.FloatTensor(obs[obs_type]).to(self.device)
+                # img 格式为 (H,W,C)，conv2d 需要 (C,H,W)，且 VAE.forward 内部会 add batch 维
+                # 其他 modality 格式为 (D,) / (H,W) 等，需要 unsqueeze(0) 加 batch 维
+                if obs_type == 'img':
+                    if arr.ndim == 3:
+                        arr = arr.permute(2, 0, 1)  # (H,W,C) -> (C,H,W)
+                    # VAE.forward / embed 会处理 batch 维
+                else:
+                    arr = arr.unsqueeze(0)
+                obs[obs_type] = arr
         else:
             raise NotImplementedError()
         return obs
@@ -287,26 +298,27 @@ class SACAgent(AgentBase):
 
     def _get_distance_to_goal(self, obs) -> np.ndarray:
         """
-        从 obs 中提取车辆到终点的欧氏距离
+        从 obs 中提取车辆到终点的欧式距离
         假设 obs['target'] 的前2个元素为 [x, y] 或 obs 中有 'position' 字段
-
-        返回: distance [N,] 每样本的距离（米）
+        输入可以是单个样本 dict、batch dict 或 list of dicts
+        返回: distance [N,] 每样本的距离（米），shape 始终为 (N,)
         """
         if isinstance(obs, dict):
             if 'target' in obs and obs['target'] is not None:
                 target = np.asarray(obs['target'])
-                if len(target.shape) == 1:
-                    return np.linalg.norm(target[:2], keepdims=True)
+                # target shape: (5,) → (1,5), (N,5) → keep as-is, 其他情况 flatten
+                if target.ndim == 1:
+                    target = target[np.newaxis, :]  # (5,) → (1,5)
                 return np.linalg.norm(target[:, :2], axis=1)
             return np.zeros(obs[list(obs.keys())[0]].shape[0])
         elif isinstance(obs, list):
             first = obs[0]
             if 'target' in first and first['target'] is not None:
                 target = np.asarray(first['target'])
-                if len(target.shape) == 1:
-                    return np.linalg.norm(target[:2], keepdims=True)
+                if target.ndim == 1:
+                    target = target[np.newaxis, :]
                 return np.linalg.norm(target[:, :2], axis=1)
-            return np.zeros(1)
+            return np.zeros(len(obs))
         return np.zeros(1)
 
     def _merge_obs_list(self, obs_list1: list, obs_list2: list) -> dict:

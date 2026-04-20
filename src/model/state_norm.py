@@ -120,9 +120,11 @@ class ZoneStateNorm:
 
         zone_ids = np.asarray(zone_ids).flatten()
         for obs_type in self.observation_shape.keys():
-            x = observation[obs_type]
-            if len(x.shape) == 1:
+            x = np.asarray(observation[obs_type])
+            if x.ndim == 1:
                 x = x[np.newaxis, :]
+            if x.shape[0] == 1 and len(zone_ids) > 1:
+                x = np.broadcast_to(x, (len(zone_ids), x.shape[1]))
             for z in range(self.K):
                 mask = (zone_ids == z)
                 if mask.sum() == 0:
@@ -181,22 +183,35 @@ class ZoneStateNorm:
 
         normed = {}
         for obs_type in self.observation_shape.keys():
-            x = observation[obs_type]
-            if len(x.shape) == 1:
-                x = x[np.newaxis, :]
+            # img 不做 zone 归一化（维度/格式与标量模态不同，由图像编码器自行处理）
+            if obs_type == 'img':
+                normed[obs_type] = np.asarray(observation[obs_type])
+                continue
+
+            x = np.asarray(observation[obs_type])
             zone_ids_arr = np.asarray(zone_ids).flatten()
+            N_zones = len(zone_ids_arr)
+
+            # 统一 x 的第一维（batch）与 zone_ids 一致
+            if x.ndim == 1:
+                x = x[np.newaxis, :]          # (D,) -> (1, D)
+            if x.shape[0] == 1 and N_zones > 1:
+                x = np.broadcast_to(x, (N_zones, x.shape[1]))  # (1, D) -> (N_zones, D)
 
             normed[obs_type] = np.zeros_like(x)
             for z in range(self.K):
                 mask = (zone_ids_arr == z)
                 if mask.sum() == 0:
                     continue
-                # 修复问题 A：per-zone None 检查替代全局 all(count<2)
-                # 统计量未就绪时降级返回原值，不影响其他 Zone
                 if self.running_mean[z][obs_type] is None:
                     normed[obs_type][mask] = x[mask]
                 else:
                     normed[obs_type][mask] = (
                         x[mask] - self.running_mean[z][obs_type]
                     ) / (self.running_std[z][obs_type] + 1e-8)
+
+        # 所有模态均 squeeze 回原始 shape（normalize 内部可能加了 batch 维）
+        for obs_type in normed:
+            if normed[obs_type].shape[0] == 1:
+                normed[obs_type] = normed[obs_type][0]
         return normed
