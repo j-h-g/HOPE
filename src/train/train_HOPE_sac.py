@@ -2,6 +2,7 @@ import sys
 sys.path.append("..")
 sys.path.append(".")
 import time
+import math
 import os
 from shutil import copyfile
 import argparse
@@ -175,6 +176,15 @@ if __name__=="__main__":
     best_success_rate = [0, 0, 0, 0]
 
     for i in range(args.train_episode):
+        # === 余弦衰减：lateral_guide_reward 权重从"启发式主导"过渡到"神经网络主导" ===
+        progress = min(i / LATERAL_GUIDE_DECAY_DURATION, 1.0)
+        current_lateral_weight = LATERAL_GUIDE_DECAY_END + \
+            (LATERAL_GUIDE_DECAY_START - LATERAL_GUIDE_DECAY_END) * \
+            (1 + math.cos(math.pi * progress)) / 2
+        raw_env.current_lateral_guide_weight = current_lateral_weight
+        writer.add_scalar("lateral_guide_weight", current_lateral_weight, i)
+        # =====================================================================================
+
         scene_chosen = scene_chooser.choose_case()
         if scene_chosen == 'dlp':
             case_id = dlp_case_chooser.choose_case()

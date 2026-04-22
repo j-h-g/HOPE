@@ -195,6 +195,11 @@ REWARD_WEIGHT = OrderedDict({'time_cost':1,\
 # A* 粗轨迹引导奖励
 ASTAR_LATERAL_DECAY = 3.0            # 横向距离衰减参数（米）
 
+# lateral_guide_reward 余弦衰减参数（从"启发式主导"过渡到"神经网络主导"）
+LATERAL_GUIDE_DECAY_START = 0.8     # 初始权重（早期：启发式主导）
+LATERAL_GUIDE_DECAY_END = 0.05     # 最终权重（后期：神经网络主导）
+LATERAL_GUIDE_DECAY_DURATION = 50000  # 过渡周期（episodes）
+
 # 相对动作掩码（动作平滑）
 USE_RELATIVE_ACTION_MASK = True                    # 是否启用相对动作掩码
 RELATIVE_ACTION_MASK_WEIGHT = 0.3                 # 衰减系数强度（0-1，越小越严格）

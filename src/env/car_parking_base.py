@@ -137,6 +137,7 @@ class CarParking(gym.Env):
         self.prev_reward = 0.0
         self.accum_arrive_reward = 0.0
         self.t = 0.0
+        self.current_lateral_guide_weight = REWARD_WEIGHT['lateral_guide_reward']
         self.prev_action = None  # 相对动作掩码：每个episode重置上一次动作
 
         if level is not None:
@@ -308,7 +309,7 @@ class CarParking(gym.Env):
                 if prev_lateral_dist is not None:
                     curr_val = math.exp(-curr_lateral_dist / ASTAR_LATERAL_DECAY)
                     prev_val = math.exp(-prev_lateral_dist / ASTAR_LATERAL_DECAY)
-                    lateral_reward = REWARD_WEIGHT['lateral_guide_reward'] * (prev_val - curr_val)
+                    lateral_reward = self.current_lateral_guide_weight * (prev_val - curr_val)
                 else:
                     lateral_reward = 0
             elif self.verbose:

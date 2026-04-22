@@ -59,7 +59,7 @@ class SACConfig(ConfigBase):
         # zone-aware & joint batch normalization
         self.use_zone_norm = False
         self.zone_boundaries = [2.0, 5.0, 10.0]
-        self.use_joint_batch_norm = True  # 保留字段，逻辑由 use_zone_norm 控制
+        self.use_joint_batch_norm = False  # 保留字段，逻辑由 use_zone_norm 控制
 
         self.merge_configs(configs)
 
