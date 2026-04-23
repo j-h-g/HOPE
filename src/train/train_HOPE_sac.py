@@ -174,6 +174,8 @@ if __name__=="__main__":
     succ_record = []
     total_step_num = 0
     best_success_rate = [0, 0, 0, 0]
+    episode_steer_changes = []  # 平顺度：每个step的|Δsteer|
+    smoothness_window = []       # 平顺度滑动窗口：每episodes的均值
 
     for i in range(args.train_episode):
         # === 余弦衰减：lateral_guide_reward 权重从"启发式主导"过渡到"神经网络主导" ===
@@ -213,6 +215,9 @@ if __name__=="__main__":
             total_reward += reward
             reward_per_state_list.append(reward)
             parking_agent.push_memory((obs, action, reward, done, log_prob, next_obs))
+            # 平顺度：记录每步转向角变化量（必须在 prev_action 更新前计算）
+            if prev_action is not None:
+                episode_steer_changes.append(abs(action[0] - prev_action[0]))
             prev_action = action  # 相对动作掩码：保存用于下一步
             obs = next_obs
             if total_step_num > parking_agent.configs.memory_size and total_step_num%10==0:
@@ -236,7 +241,14 @@ if __name__=="__main__":
                     if scene_chosen == 'dlp':
                         dlp_case_chooser.update_success_record(0, case_id)
 
-            
+        # 每episode结束时计算平顺度
+        if len(episode_steer_changes) > 0:
+            smoothness_window.append(np.mean(episode_steer_changes))
+            episode_steer_changes = []
+        if (i+1) % 10 == 0 and len(smoothness_window) > 0:
+            writer.add_scalar("smoothness", np.mean(smoothness_window), i)
+            smoothness_window = []
+
         writer.add_scalar("total_reward", total_reward, i)
         writer.add_scalar("avg_reward", np.mean(reward_per_state_list[-1000:]), i)
         writer.add_scalar("action_std0", parking_agent.log_std.detach().cpu().numpy().reshape(-1)[0],i)

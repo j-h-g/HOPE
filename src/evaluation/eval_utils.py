@@ -38,12 +38,14 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
         path_length = 0
         last_xy = (env.vehicle.state.loc.x, env.vehicle.state.loc.y)
         last_obs = obs['target']
+        episode_steers = []  # 平顺度：记录本episode所有steer
         while not done:
             step_num += 1
             if post_proc_action:
                 action, _ = agent.choose_action(obs, prev_action)
             else:
                 action, _ = agent.get_action(obs, prev_action)
+            episode_steers.append(action[0])  # 平顺度：记录steer
             if (last_obs == obs['target']).all():
                 action = env.action_space.sample()
             last_obs = obs['target']
@@ -83,12 +85,27 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
                             'step_num':step_num,
                             'reward':total_reward,
                             'path_length':path_length,
+                            'steer_sequence': episode_steers.copy(),
                             })
+
+    # 平顺度：计算所有episodes的|Δsteer|均值
+    all_delta_steer = []
+    for r in eval_record:
+        steers = r['steer_sequence']
+        for j in range(1, len(steers)):
+            all_delta_steer.append(abs(steers[j] - steers[j-1]))
+    smoothness = np.mean(all_delta_steer) if all_delta_steer else 0
+    # 效率：E = 1e-7 * (SR/100) / T
+    avg_step = np.mean([r['step_num'] for r in eval_record])
+    sr = np.mean(succ_record)
+    efficiency = 1e-7 * (sr / 100) / avg_step if avg_step > 0 else 0
 
     print('#'*15)
     print('EVALUATE RESULT:')
     print('success rate: ', np.mean(succ_record))
     print('average reward: ', np.mean(reward_record))
+    print(f'smoothness (mean|Δsteer|): {smoothness:.6f}')
+    print(f'efficiency: {efficiency:.6e}')
     print('-'*10)
     print('success rate per case: ')
     case_ids = [int(k) for k in succ_rate_case.keys()]
@@ -136,6 +153,9 @@ def eval(env, agent, episode=2000, log_path='', multi_level=False, post_proc_act
 
         f_record_txt = open(log_path+'/result.txt', 'w', newline='')
         f_record_txt.write('success rate: %s\n'%np.mean(succ_record))
+        f_record_txt.write('average reward: %s\n'%np.mean(reward_record))
+        f_record_txt.write(f'smoothness (mean|Δsteer|): {smoothness:.6f}\n')
+        f_record_txt.write(f'efficiency: {efficiency:.6e}\n')
         f_record_txt.write('step num: %s '%np.mean(success_step_record)+'+-(%s)\n'%np.std(success_step_record))
         if multi_level:
             f_record_txt.write('\n')
